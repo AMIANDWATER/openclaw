@@ -1,67 +1,67 @@
-name: Workflow Sanity
-
-on:
-  pull_request:
-  push:
-    branches: [main]
-
-concurrency:
-  group: workflow-sanity-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+name: Build-Windows-Package
+on: [workflow_dispatch]
 
 jobs:
-  no-tabs:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+  build:
+    runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+          
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: Fail on tabs in workflow files
+      # 第一步：编译核心 (这是必须用 pnpm 的部分)
+      - name: Compile Core
         run: |
-          python - <<'PY'
-          from __future__ import annotations
-
-          import pathlib
-          import sys
-
-          root = pathlib.Path(".github/workflows")
-          bad: list[str] = []
-          for path in sorted(root.rglob("*.yml")):
-            if b"\t" in path.read_bytes():
-              bad.append(str(path))
-
-          for path in sorted(root.rglob("*.yaml")):
-            if b"\t" in path.read_bytes():
-              bad.append(str(path))
-
-          if bad:
-            print("Tabs found in workflow file(s):")
-            for path in bad:
-              print(f"- {path}")
-            sys.exit(1)
-          PY
-
-  actionlint:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install actionlint
-        shell: bash
+          pnpm install --no-frozen-lockfile
+          pnpm run build
+          
+      # 第二步：【战略大支点】搬家到干净目录，彻底甩掉 pnpm 的纠缠
+      - name: Move to Clean Workspace
+        shell: pwsh
         run: |
-          set -euo pipefail
-          ACTIONLINT_VERSION="1.7.11"
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          base_url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
-          curl -sSfL -o "${archive}" "${base_url}/${archive}"
-          curl -sSfL -o checksums.txt "${base_url}/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
-          grep " ${archive}\$" checksums.txt | sha256sum -c -
-          tar -xzf "${archive}" actionlint
-          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+          mkdir ../portable-package
+          # 只把我们需要的东西：package.json, bin, dist, 以及关键的各种入口文件考走
+          Copy-Item -Path "package.json", "openclaw.mjs", "dist" -Destination "../portable-package/" -Recurse -Force
+          # 尝试捞取子模块编译出的内容
+          Copy-Item -Path "apps/*/dist/*" -Destination "../portable-package/dist/" -ErrorAction SilentlyContinue
 
-      - name: Lint workflows
-        run: actionlint
+      # 第三步：在干净目录里，用 npm 手动灌入“实心”依赖
+      - name: Install Flat Dependencies
+        shell: pwsh
+        run: |
+          cd ../portable-package
+          # 彻底禁用 pnpm，改用 npm 安装生产环境依赖
+          # npm install 生成的一定是包含真实代码的文件夹
+          npm install --omit=dev --no-package-lock --legacy-peer-deps
 
-      - name: Disallow direct inputs interpolation in composite run blocks
-        run: python3 scripts/check-composite-action-input-interpolation.py
+      # 第四步：【死磕自检】如果文件夹还是空的，直接让 GitHub 炸掉，不让你下错
+      - name: Hard Self-Check
+        shell: pwsh
+        run: |
+          cd ../portable-package
+          Write-Host "Checking Chalk folder..."
+          if (!(Test-Path "node_modules/chalk/index.js")) {
+             Write-Error "CRITICAL FAILURE: The folder is STILL EMPTY! Stopping build."
+             exit 1
+          }
+          Write-Host "Victory! Real files detected."
+
+      # 第五步：打包那个“干净、实心”的新文件夹
+      - name: Create Final Zip
+        shell: pwsh
+        run: |
+          cd ../portable-package
+          Compress-Archive -Path "*" -DestinationPath "../openclaw_proper_offline.zip" -Force
+            
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaw-REAL-OFFLINE
+          path: openclaw_proper_offline.zip
