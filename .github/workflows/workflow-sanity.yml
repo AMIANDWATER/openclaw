@@ -16,52 +16,55 @@ jobs:
         with:
           node-version: '22'
 
-      # 第一步：编译核心 (这是必须用 pnpm 的部分)
-      - name: Compile Core
+      # 1. 第一步：正常安装并编译
+      - name: Build Core
         run: |
           pnpm install --no-frozen-lockfile
           pnpm run build
+
+      # 2. 第二步：【降维打击】使用 pnpm deploy 抽离出一个纯净、实体的运行环境
+      # 我们假设核心模块在 apps/cli，如果不是，它会尝试寻找其他 apps
+      - name: Deploy Portable Folder
+        shell: pwsh
+        run: |
+          # 尝试找到核心 package 的名字 (通常是 openclaw 或 @openclaw/cli)
+          $pkgName = (Get-Content "package.json" | ConvertFrom-Json).name
+          Write-Host "Deploying package: $pkgName"
           
-      # 第二步：【战略大支点】搬家到干净目录，彻底甩掉 pnpm 的纠缠
-      - name: Move to Clean Workspace
-        shell: pwsh
-        run: |
-          mkdir ../portable-package
-          # 只把我们需要的东西：package.json, bin, dist, 以及关键的各种入口文件考走
-          Copy-Item -Path "package.json", "openclaw.mjs", "dist" -Destination "../portable-package/" -Recurse -Force
-          # 尝试捞取子模块编译出的内容
-          Copy-Item -Path "apps/*/dist/*" -Destination "../portable-package/dist/" -ErrorAction SilentlyContinue
+          # 这个命令是专门为了“移动到其他机器运行”设计的，它会自动处理所有依赖并转为实体文件
+          # 我们把结果部署到 ../portable-dist
+          pnpm --filter "$pkgName" deploy --prod ../portable-dist
 
-      # 第三步：在干净目录里，用 npm 手动灌入“实心”依赖
-      - name: Install Flat Dependencies
+      # 3. 第三步：补全 dist 编译产物
+      # 部署命令有时只考源码，我们需要把刚编译好的核心 dist 强行塞进去
+      - name: Sync Compiled Files
         shell: pwsh
         run: |
-          cd ../portable-package
-          # 彻底禁用 pnpm，改用 npm 安装生产环境依赖
-          # npm install 生成的一定是包含真实代码的文件夹
-          npm install --omit=dev --no-package-lock --legacy-peer-deps
+          Copy-Item -Path "dist", "openclaw.mjs", "bin" -Destination "../portable-dist/" -Recurse -Force -ErrorAction SilentlyContinue
+          # 强制把所有 apps 下的编译产物都搜刮干净
+          Get-ChildItem -Path "apps/*/dist/*" -ErrorAction SilentlyContinue | Copy-Item -Destination "../portable-dist/dist/" -Force
 
-      # 第四步：【死磕自检】如果文件夹还是空的，直接让 GitHub 炸掉，不让你下错
-      - name: Hard Self-Check
+      # 4. 第四步：【硬核检查】如果在部署后的 node_modules 里还找不到 chalk，脚本会立刻自毁（红色报错）
+      - name: Hard Verification
         shell: pwsh
         run: |
-          cd ../portable-package
-          Write-Host "Checking Chalk folder..."
-          if (!(Test-Path "node_modules/chalk/index.js")) {
-             Write-Error "CRITICAL FAILURE: The folder is STILL EMPTY! Stopping build."
+          cd ../portable-dist
+          Write-Host "Verifying real files in node_modules..."
+          if (!(Test-Path "node_modules/chalk/package.json")) {
+             Write-Error "STILL EMPTY! pnpm deploy failed to manifest files."
              exit 1
           }
-          Write-Host "Victory! Real files detected."
+          Write-Host "SUCCESS: Real files are present!"
 
-      # 第五步：打包那个“干净、实心”的新文件夹
-      - name: Create Final Zip
+      # 5. 第五步：打包那个绝对真实的文件夹
+      - name: Final Zip
         shell: pwsh
         run: |
-          cd ../portable-package
-          Compress-Archive -Path "*" -DestinationPath "../openclaw_proper_offline.zip" -Force
+          cd ../portable-dist
+          Compress-Archive -Path "*" -DestinationPath "../OpenClaw_Absolute_Offline.zip" -Force
             
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenClaw-REAL-OFFLINE
-          path: openclaw_proper_offline.zip
+          name: OpenClaw_FINAL_RESULT
+          path: OpenClaw_Absolute_Offline.zip
