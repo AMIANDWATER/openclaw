@@ -1,0 +1,68 @@
+name: OpenClaw-Final-Portable-Builder
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+          
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 1. 第一阶段：编译 (使用 pnpm 正常处理多模块编译)
+      - name: Build JS Core
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm run build
+
+      # 2. 第二阶段：搬家 (创建一个完全独立的、不受 pnpm 链接污染的文件夹)
+      - name: Create Isolated Folder
+        shell: pwsh
+        run: |
+          mkdir FinalBuild
+          # 拷贝编译后的核心 JS 文件和入口
+          Copy-Item -Path "dist", "openclaw.mjs", "package.json", "bin" -Destination "FinalBuild/" -Recurse -Force -ErrorAction SilentlyContinue
+          # 搜刮所有 apps 子文件夹下的 dist 并合并到主 dist 目录
+          Get-ChildItem -Path "apps/*/dist/*" -ErrorAction SilentlyContinue | Copy-Item -Destination "FinalBuild/dist/" -Force
+
+      # 3. 第三阶段：灌录 (用 npm 在独立文件夹里安装“实心”依赖)
+      - name: Install Pure Dependencies
+        shell: pwsh
+        run: |
+          cd FinalBuild
+          # npm install 生成的一定是包含真实代码的文件夹，绝无虚假链接
+          npm install --omit=dev --no-package-lock --legacy-peer-deps
+
+      # 4. 第四阶段：暴力自检 (如果 chalk 文件夹还是空的，任务会直接失败变红)
+      - name: Final Integrity Check
+        shell: pwsh
+        run: |
+          Write-Host "Checking for real files..."
+          if (!(Test-Path "FinalBuild/node_modules/chalk/package.json")) {
+             throw "CRITICAL FAILURE: node_modules contains empty folders/links!"
+          }
+          if (!(Test-Path "FinalBuild/dist/entry.js")) {
+             throw "CRITICAL FAILURE: Compiled code (dist/entry.js) is missing!"
+          }
+          Write-Host "Verification Success: Portable folder is solid."
+
+      # 5. 第五阶段：打包 (在根目录生成最终 ZIP)
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "FinalBuild/*" -DestinationPath "OpenClaw_Final_Package.zip" -Force
+
+      # 6. 第六阶段：上传 (这次路径绝对不会错)
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaw_Offline_Ready
+          path: OpenClaw_Final_Package.zip
+          retention-days: 1
