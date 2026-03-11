@@ -1,26 +1,36 @@
 name: Build-Windows-Package
-on: [workflow_dispatch] # 允许手动点击按钮运行
+on: [workflow_dispatch]
 
 jobs:
   build:
-    runs-on: windows-latest # 必须在 Windows 系统下运行，确保二进制文件正确
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
-          
-      - name: Install All Dependencies
+
+      - name: Install Dependencies
+        # 强制安装所有依赖，忽略可能的冲突
         run: |
-          npm install --omit=dev
+          npm install --force
           
-      - name: Zip Files
+      - name: Build Project (If exists)
+        # 如果项目中有编译脚本（如生成 dist 或 bin），则执行它
+        run: npm run build --if-present
+            
+      - name: Create Zip Package
+        shell: pwsh
         run: |
-          # 这一步把代码、依赖、bin 目录全部打包
-          Compress-Archive -Path "node_modules", "package.json", "bin", "dist", "README.md" -DestinationPath "openclaw_windows.zip" -ErrorAction SilentlyContinue
-          
-      - name: Upload Finished Zip
+          # 1. 查找依赖是否安装成功
+          ls node_modules
+          # 2. 打包所有文件（排除临时文件和 git 记录）
+          $exclude = @(".git", ".github", "openclaw_windows.zip")
+          Get-ChildItem -Exclude $exclude | Compress-Archive -DestinationPath "openclaw_windows.zip" -Force
+            
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: openclaw-windows-offline
