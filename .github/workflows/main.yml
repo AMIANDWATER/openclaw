@@ -7,36 +7,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # 1. 安装 pnpm (项目强依赖它)
       - uses: pnpm/action-setup@v3
         with:
           version: 9
           
-      # 2. 设置 Node.js
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'pnpm'
 
-      # 3. 使用 pnpm 安装依赖
-      - name: Install Dependencies
+      - name: Install Dependencies (Flat Mode)
+        # 这里非常重要：强制把所有依赖平铺，不使用链接
         run: |
+          pnpm config set shamefully-hoist true
           pnpm install --no-frozen-lockfile
           
-      # 4. 执行项目构建 (生成 bin 和 dist 目录)
       - name: Build Project
         run: pnpm run build
             
-      # 5. 打包生成 Windows 离线大礼包
+      - name: Finalize node_modules for Portable
+        # 这一步能确保打包进去的是真正的文件夹，而不是失效的链接
+        run: |
+          pnpm install --prod --no-frozen-lockfile
+
       - name: Create Zip Package
         shell: pwsh
         run: |
-          # 排除无用目录，打包核心文件和所有依赖
+          # 排除掉不需要的源码，只留核心和依赖，减小体积并确保可用
           $exclude = @(".git", ".github", "openclaw_windows.zip")
           Get-ChildItem -Exclude $exclude | Compress-Archive -DestinationPath "openclaw_windows.zip" -Force
             
-      # 6. 上传可供下载的文件
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
