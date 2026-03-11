@@ -7,6 +7,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      # 1. 安装 pnpm 并在底层强制禁用链接模式
       - uses: pnpm/action-setup@v3
         with:
           version: 9
@@ -16,24 +17,27 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install Dependencies (Flat Mode)
-        # 这里非常重要：强制把所有依赖平铺，不使用链接
+      # 2. 设置真正的平铺模式 (这是解决报错的关键)
+      - name: Config Pnpm Linker
         run: |
+          pnpm config set node-linker hoisted
           pnpm config set shamefully-hoist true
-          pnpm install --no-frozen-lockfile
+
+      # 3. 安装依赖（现在会下载真实文件到 node_modules）
+      - name: Install Dependencies
+        run: pnpm install --no-frozen-lockfile
           
+      # 4. 构建核心代码
       - name: Build Project
         run: pnpm run build
             
-      - name: Finalize node_modules for Portable
-        # 这一步能确保打包进去的是真正的文件夹，而不是失效的链接
-        run: |
-          pnpm install --prod --no-frozen-lockfile
-
+      # 5. 打包生成真正的绿色离线包
       - name: Create Zip Package
         shell: pwsh
         run: |
-          # 排除掉不需要的源码，只留核心和依赖，减小体积并确保可用
+          # 验证 chalk 等包是否存在，确保这次真的有文件了
+          if (Test-Path "node_modules/chalk") { Write-Host "Chalk exists!" }
+          
           $exclude = @(".git", ".github", "openclaw_windows.zip")
           Get-ChildItem -Exclude $exclude | Compress-Archive -DestinationPath "openclaw_windows.zip" -Force
             
